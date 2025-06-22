@@ -1,0 +1,179 @@
+---
+title: "Customer segmentation"
+output: html_document
+date: "2025-06-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+```{r}
+library(tidymodels)
+library(tidyverse)
+library(tidyclust)
+library(corrplot)
+```
+```{r}
+customer<- read.csv(choose.files())
+
+```
+
+```{r}
+glimpse(customer)
+summary(customer)
+```
+```{r}
+char_vars <- customer %>%
+  select(Gender)
+
+char_vars %>%
+  pivot_longer(cols = everything()) %>%
+  ggplot(aes(x = value, fill = value)) +
+  facet_wrap(~name, scales = "free", ncol = 3) +
+  geom_bar() +  
+  coord_flip() +
+  theme_minimal() +
+  scale_fill_viridis_d()  
+```
+```{r}
+numeric_features <- customer %>%
+  select(where(is.numeric))
+numeric_features<-numeric_features %>% select(-CustomerID)
+numeric_features %>%
+  pivot_longer(cols = everything()) %>%
+  ggplot(aes(x = value)) +  # Use value on x-axis for distribution
+  geom_histogram(binwidth = 10, fill = "lightgreen", color = "black") +  # Histogram with customizable binwidth
+  theme_minimal() +
+  facet_wrap(~ name, scales = "free") +  # Separate by variable with free scales
+  labs(title = "Distribution of Numeric Variables", x = "Value", y = "Count")
+```
+```{r}
+cor_matrix <- cor(numeric_features)
+corrplot(cor_matrix, method = "color", type = "full", tl.col = "black", tl.srt = 45)
+```
+
+```{r}
+cluster_rec<-customer %>% recipe(~.) %>% 
+  update_role(c(CustomerID,Gender),new_role = "id") %>% 
+  step_normalize(all_predictors())
+cluster_mod<-k_means(num_clusters = 3) %>% 
+  set_mode("partition") %>%
+ set_engine("stats")
+clust_wf<-workflow() %>% 
+  add_model(cluster_mod) %>% 
+  add_recipe(cluster_rec)
+cluster_fit<-fit(clust_wf,customer)
+sse_ratio(cluster_fit)
+cluster_aug<-cluster_fit %>% augment(customer) 
+cluster_fit %>% silhouette_avg(customer)
+```
+```{r}
+cluster_aug %>% 
+  ggplot(aes(Annual.Income..k.., Spending.Score..1.100.)) +
+  geom_point(aes(color = .pred_cluster), alpha = 0.7, size = 2) +
+  ggrepel::geom_text_repel(
+    aes(label = ""),  
+    max.overlaps = 40,
+    size = 3
+  ) +
+  labs(title = " Scatter Plot with K-means Clusters",
+       x = "Annual.Income..k..",
+       y = "Spending.Score..1.100.",
+       color = "Cluster") +
+  theme_bw()
+```
+```{r}
+cluster_aug$.pred_cluster <- recode(cluster_aug$.pred_cluster,
+                                "Cluster_1" = "High Spenders",
+                                "Cluster_2" = "Average Customers",
+                                "Cluster_3" = "Cautious Rich")
+customer2<-cluster_aug %>% mutate(CustomerSegmentation=.pred_cluster)
+customer2<-customer2 %>% select(-.pred_cluster)
+glimpse(customer2)
+```
+```{r}
+customer_segmen <- customer2 %>%
+  select(CustomerSegmentation)
+
+customer_segmen %>%
+  pivot_longer(cols = everything()) %>%
+  ggplot(aes(x = value, fill = value)) +
+  facet_wrap(~name, scales = "free", ncol = 3) +
+  geom_bar() +  
+  coord_flip() +
+  theme_minimal() +
+  scale_fill_viridis_d()  
+```
+```{r}
+set.seed(2025)
+df_split<-customer2 %>% initial_split(0.75) 
+train_customer<-df_split %>% training()
+test_customer<-df_split %>% testing()
+```
+
+```{r}
+rec<-train_customer %>% recipe(CustomerSegmentation~.) %>% 
+  step_normalize(all_numeric_predictors()) %>% 
+  step_dummy(all_nominal_predictors())
+rec %>% prep() %>% juice()
+```
+
+```{r}
+knn_model<-nearest_neighbor(neighbors = 11,dist_power = 1) %>% 
+  set_mode("classification") %>% 
+  set_engine("kknn")
+```
+
+```{r}
+wf<-workflow() %>% 
+  add_model(knn_model) %>% 
+  add_recipe(rec)
+```
+
+```{r}
+fit_knn<-wf %>% last_fit(df_split )
+fit_knn %>% collect_metrics()
+aug_knn<-fit_knn %>% augment()
+aug_knn %>% conf_mat(truth = CustomerSegmentation,estimate = .pred_class)
+```
+```{r}
+rf_model<-rand_forest(trees = 100,mtry = 7,min_n = 5) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger")
+```
+
+```{r}
+wf_rf<-workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(rec)
+```
+
+```{r}
+fit_rf<-wf_rf %>% last_fit(df_split )
+fit_rf %>% collect_metrics()
+aug_rf<-fit_rf %>% augment()
+aug_rf %>% conf_mat(truth = CustomerSegmentation,estimate = .pred_class)
+```
+
